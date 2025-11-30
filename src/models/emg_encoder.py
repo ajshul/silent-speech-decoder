@@ -32,6 +32,7 @@ class Conv1dSubsampler(nn.Module):
         layers = []
         in_dim = input_dim
         remaining = factor
+        self._conv_meta = []
         while remaining > 1:
             stride = 2
             layers.append(
@@ -44,11 +45,16 @@ class Conv1dSubsampler(nn.Module):
                 )
             )
             layers.append(nn.ReLU())
+            self._conv_meta.append(
+                {"kernel_size": kernel_size, "stride": stride, "padding": kernel_size // 2}
+            )
             in_dim = output_dim
             remaining //= 2
         if not layers:
             # No subsampling; project to output_dim.
-            layers.append(nn.Conv1d(in_dim, output_dim, kernel_size=1))
+            conv = nn.Conv1d(in_dim, output_dim, kernel_size=1)
+            layers.append(conv)
+            self._conv_meta.append({"kernel_size": 1, "stride": 1, "padding": 0})
         self.net = nn.Sequential(*layers)
         self.factor = factor
 
@@ -57,6 +63,15 @@ class Conv1dSubsampler(nn.Module):
         x = x.transpose(1, 2)  # (batch, feat, time)
         x = self.net(x)
         return x.transpose(1, 2)  # (batch, time', output_dim)
+
+    def output_lengths(self, lengths: torch.Tensor) -> torch.Tensor:
+        out = lengths.clone()
+        for meta in self._conv_meta:
+            k = meta["kernel_size"]
+            s = meta["stride"]
+            p = meta["padding"]
+            out = torch.div(out + 2 * p - k, s, rounding_mode="floor") + 1
+        return out
 
 
 class EMGConformerEncoder(nn.Module):
@@ -91,8 +106,8 @@ class EMGConformerEncoder(nn.Module):
         x = self.subsample(x)
         out_lengths = None
         if lengths is not None:
-            out_lengths = torch.div(
-                lengths, self.subsample_factor, rounding_mode="floor"
-            )
+            out_lengths = self.subsample.output_lengths(lengths)
+            # Guard against off-by-one from conv padding/stride vs actual tensor length.
+            out_lengths = torch.clamp(out_lengths, max=x.shape[1])
         x, out_lengths = self.encoder(x, out_lengths)
         return x, out_lengths

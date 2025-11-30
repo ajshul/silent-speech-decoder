@@ -66,11 +66,16 @@ class EMGFeatureDataset(Dataset):
         features_root: Path,
         splits: Sequence[str],
         vocab: Vocab,
+        subsets: Optional[Sequence[str]] = None,
         include_teacher: bool = True,
         strict: bool = True,
     ) -> None:
         df = load_index(index_path)
         df = df[df["split"].isin(splits)].reset_index(drop=True)
+        if subsets:
+            if "subset" not in df.columns:
+                raise KeyError("Index missing 'subset' column; re-run indexing.")
+            df = df[df["subset"].isin(subsets)].reset_index(drop=True)
         self.df = df
         self.features_root = features_root
         self.vocab = vocab
@@ -184,6 +189,7 @@ def make_dataloader(
     index_path: Path,
     features_root: Path,
     splits: Sequence[str],
+    subsets: Optional[Sequence[str]],
     vocab: Vocab,
     batch_size: int,
     shuffle: bool = True,
@@ -197,6 +203,7 @@ def make_dataloader(
         features_root=features_root,
         splits=splits,
         vocab=vocab,
+        subsets=subsets,
         include_teacher=include_teacher,
         strict=strict,
     )

@@ -69,6 +69,7 @@ def test_dataset_and_collate_with_teacher(tmp_path: Path) -> None:
         splits=["train"],
         vocab=vocab,
         include_teacher=True,
+        subsets=None,
     )
 
     batch = [ds[0], ds[1]]

@@ -4,6 +4,8 @@ data:
   features_root: results/features
   train_splits: [voiced_parallel_data]
   val_splits: [voiced_parallel_data]
+  train_subsets: [train]
+  val_subsets: [val]
   vocab: configs/vocab.json
 
 features:

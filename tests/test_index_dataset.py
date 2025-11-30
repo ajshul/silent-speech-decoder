@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.data.index_dataset import build_index, summarize_index
+from src.data.index_dataset import assign_subset, build_index, summarize_index
 
 
 def _write_sample(
@@ -88,6 +88,11 @@ def test_build_index_filters_and_prefers_clean(tmp_path: Path) -> None:
     silent_row = df[df["stem"] == "010"].iloc[0]
     assert pd.isna(silent_row["audio_path"])
     assert not bool(silent_row["has_audio"])
+    assert silent_row["subset"] == "eval_silent"
+
+    # Deterministic subset assignment for voiced.
+    for _, r in df[df["split"] == "voiced_parallel_data"].iterrows():
+        assert r["subset"] == assign_subset(r["split"], r["utterance_id"])
 
 
 def test_summarize_index_reports_counts_and_durations(tmp_path: Path) -> None:
@@ -109,3 +114,4 @@ def test_summarize_index_reports_counts_and_durations(tmp_path: Path) -> None:
     assert voiced_stats["count"] == 1
     assert voiced_stats["with_audio"] == 1
     assert abs(voiced_stats["mean_duration_sec"] - 2.0) < 1e-6
+    assert voiced_stats["subset_counts"][assign_subset("voiced_parallel_data", "voiced_parallel_data/speaker1/100")] == 1

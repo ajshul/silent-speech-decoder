@@ -125,7 +125,10 @@ def process_emg_row(row, root: Path, out_dir: Path, cfg: EMGConfig, overwrite: b
 
 def _load_teacher(cfg: TeacherConfig) -> Tuple[Wav2Vec2FeatureExtractor, WavLMModel]:
     processor = Wav2Vec2FeatureExtractor.from_pretrained(cfg.model_name)
-    model = WavLMModel.from_pretrained(cfg.model_name)
+    model = WavLMModel.from_pretrained(
+        cfg.model_name,
+        use_safetensors=True,  # avoid torch.load CVE guardrails when safetensors exists
+    )
     model.to(cfg.device)
     model.eval()
     for param in model.parameters():
@@ -330,4 +333,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

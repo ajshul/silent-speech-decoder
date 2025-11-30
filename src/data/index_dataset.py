@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 from dataclasses import asdict, dataclass
+import hashlib
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -45,6 +46,7 @@ class IndexEntry:
 
     utterance_id: str
     split: str
+    subset: str
     speaker: str
     stem: str
     emg_path: str
@@ -79,6 +81,22 @@ def _find_audio_path(base_dir: Path, stem: str) -> Optional[Path]:
     return None
 
 
+def assign_subset(split: str, utterance_id: str) -> str:
+    """Deterministic train/val/test assignment for voiced; tag others for eval."""
+    if split == "voiced_parallel_data":
+        h = int(hashlib.md5(utterance_id.encode("utf-8")).hexdigest(), 16) % 100
+        if h < 80:
+            return "train"
+        if h < 90:
+            return "val"
+        return "test"
+    if split == "silent_parallel_data":
+        return "eval_silent"
+    if split.startswith("closed_vocab"):
+        return "closed_vocab"
+    return "unused"
+
+
 def _build_entry(
     info_path: Path, root: Path, split: str
 ) -> Optional[IndexEntry]:
@@ -98,10 +116,12 @@ def _build_entry(
     audio_path = _find_audio_path(info_path.parent, stem)
     speaker = info_path.parent.name
     utterance_id = f"{split}/{speaker}/{stem}"
+    subset = assign_subset(split, utterance_id)
 
     return IndexEntry(
         utterance_id=utterance_id,
         split=split,
+        subset=subset,
         speaker=speaker,
         stem=stem,
         emg_path=str(emg_path.relative_to(root)),
@@ -178,6 +198,7 @@ def summarize_index(
         stats = {
             "count": int(len(group)),
             "with_audio": int(group["has_audio"].sum()),
+            "subset_counts": group["subset"].value_counts().to_dict(),
         }
         if include_durations and root is not None:
             durations: List[float] = []
@@ -280,4 +301,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
