@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import random
 import time
 from pathlib import Path
@@ -81,6 +82,45 @@ def build_model(cfg: Dict, input_dim: int, vocab_size: int, device: torch.device
     return encoder, projection, ctc_head
 
 
+def build_scheduler(
+    cfg: Dict, optimizer: optim.Optimizer, total_updates: int
+) -> optim.lr_scheduler._LRScheduler | None:
+    """
+    Supports simple cosine annealing or linear warmup/decay schedulers.
+    Accepts either a string name or a config dict with fields:
+      - name/type: "cosine" or "linear"
+      - warmup_steps: int (linear)
+      - eta_min: float (cosine)
+      - t_max/total_steps: int (cosine/linear decay horizon)
+    """
+    sched_cfg = cfg["optim"].get("scheduler")
+    if not sched_cfg:
+        return None
+
+    name = sched_cfg if isinstance(sched_cfg, str) else sched_cfg.get("name", sched_cfg.get("type", ""))
+    name = str(name).lower()
+    total_updates = max(1, total_updates)
+
+    if name in {"cosine", "cosineannealing", "cosine_annealing"}:
+        t_max = int(sched_cfg.get("t_max", total_updates)) if isinstance(sched_cfg, dict) else total_updates
+        eta_min = float(sched_cfg.get("eta_min", 0.0)) if isinstance(sched_cfg, dict) else 0.0
+        return optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max, eta_min=eta_min)
+
+    if name in {"linear", "linear_warmup", "warmup"}:
+        warmup_steps = int(sched_cfg.get("warmup_steps", 0)) if isinstance(sched_cfg, dict) else 0
+        decay_steps = int(sched_cfg.get("total_steps", total_updates)) if isinstance(sched_cfg, dict) else total_updates
+
+        def lr_lambda(step: int) -> float:
+            if step < warmup_steps:
+                return float(step + 1) / float(max(1, warmup_steps))
+            progress = (step - warmup_steps) / float(max(1, decay_steps - warmup_steps))
+            return max(0.0, 1.0 - progress)
+
+        return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    raise ValueError(f"Unknown scheduler '{name}'")
+
+
 def save_checkpoint(
     run_dir: Path,
     epoch: int,
@@ -131,6 +171,31 @@ def train_one_epoch(
     projection.train()
     ctc_head.train()
 
+    if len(loader) == 0:
+        return global_step
+
+    last_losses: Dict[str, torch.Tensor] | None = None
+
+    def optimizer_step() -> None:
+        nonlocal global_step, last_losses
+        if clip_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                list(encoder.parameters())
+                + list(projection.parameters())
+                + list(ctc_head.parameters()),
+                max_norm=clip_grad_norm,
+            )
+        optimizer.step()
+        if scheduler:
+            scheduler.step()
+        optimizer.zero_grad(set_to_none=True)
+        global_step += 1
+        if writer and last_losses is not None and (global_step % log_interval == 0 or global_step == 1):
+            writer.add_scalar("train/total_loss", last_losses["total"].item(), global_step)
+            writer.add_scalar("train/ctc_loss", last_losses["ctc"].item(), global_step)
+            writer.add_scalar("train/distill_loss", last_losses["distill"].item(), global_step)
+            writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
+
     optimizer.zero_grad(set_to_none=True)
     for batch_idx, batch in enumerate(loader):
         emg = batch["emg"].to(device)
@@ -145,7 +210,7 @@ def train_one_epoch(
         student_repr = projection(enc_out)
         log_probs = ctc_head(enc_out)
 
-        losses = loss_fn(
+        last_losses = loss_fn(
             log_probs=log_probs,
             logit_lengths=enc_lengths.cpu(),
             targets=tokens,
@@ -153,27 +218,15 @@ def train_one_epoch(
             student_repr=student_repr,
             teacher_repr=teacher,
         )
-        loss = losses["total"] / grad_accum
+        loss = last_losses["total"] / grad_accum
         loss.backward()
 
         if (batch_idx + 1) % grad_accum == 0:
-            if clip_grad_norm > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    list(encoder.parameters())
-                    + list(projection.parameters())
-                    + list(ctc_head.parameters()),
-                    max_norm=clip_grad_norm,
-                )
-            optimizer.step()
-            if scheduler:
-                scheduler.step()
-            optimizer.zero_grad(set_to_none=True)
+            optimizer_step()
 
-        if writer and (global_step % log_interval == 0):
-            writer.add_scalar("train/total_loss", losses["total"].item(), global_step)
-            writer.add_scalar("train/ctc_loss", losses["ctc"].item(), global_step)
-            writer.add_scalar("train/distill_loss", losses["distill"].item(), global_step)
-        global_step += 1
+    # Final step for leftover gradients when len(loader) is not divisible by grad_accum.
+    if len(loader) % grad_accum != 0:
+        optimizer_step()
 
     return global_step
 
@@ -236,6 +289,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run a single epoch over a tiny subset for debugging.",
     )
+    parser.add_argument(
+        "--overfit-batches",
+        type=int,
+        default=0,
+        help="Limit train/val to this many batches to validate the model can overfit.",
+    )
     return parser.parse_args()
 
 
@@ -261,6 +320,15 @@ def main() -> None:
             p=spec_section.get("p", 0.0),
         )
 
+    train_limit = None
+    val_limit = None
+    shuffle_train = True
+    if args.overfit_batches > 0:
+        train_limit = args.overfit_batches * cfg["optim"]["batch_size"]
+        val_limit = train_limit
+        shuffle_train = False
+        logger.info("Overfitting on %d batches (~%d items) for train/val.", args.overfit_batches, train_limit)
+
     train_loader = make_dataloader(
         index_path=Path(cfg["data"]["index"]),
         features_root=Path(cfg["data"]["features_root"]),
@@ -268,10 +336,11 @@ def main() -> None:
         subsets=cfg["data"].get("train_subsets"),
         vocab=vocab,
         batch_size=cfg["optim"]["batch_size"],
-        shuffle=True,
+        shuffle=shuffle_train,
         num_workers=cfg["optim"].get("num_workers", 0),
         spec_augment_cfg=spec_cfg,
         include_teacher=True,
+        max_items=train_limit,
     )
     val_loader = make_dataloader(
         index_path=Path(cfg["data"]["index"]),
@@ -284,12 +353,25 @@ def main() -> None:
         num_workers=cfg["optim"].get("num_workers", 0),
         spec_augment_cfg=None,
         include_teacher=True,
+        max_items=val_limit,
+    )
+
+    logger.info(
+        "Train batches: %d | Val batches: %d | batch size: %d | grad_accum: %d",
+        len(train_loader),
+        len(val_loader),
+        cfg["optim"]["batch_size"],
+        cfg["optim"].get("grad_accum", 1),
     )
 
     # Infer input dimension from a sample.
     sample = next(iter(train_loader))
     input_dim = sample["emg"].shape[-1]
-    teacher_dim = sample["teacher"].shape[-1] if sample["teacher"] is not None else cfg["features"]["teacher"]["dim"]
+    teacher_dim = (
+        sample["teacher"].shape[-1]
+        if sample["teacher"] is not None
+        else cfg["features"]["teacher"]["dim"]
+    )
 
     encoder, projection, ctc_head = build_model(cfg, input_dim=input_dim, vocab_size=vocab.size, device=device)
     loss_fn = DistillationCTCLoss(
@@ -305,13 +387,17 @@ def main() -> None:
     lr = float(cfg["optim"]["lr"])
     weight_decay = float(cfg["optim"].get("weight_decay", 0.0))
     optimizer = optim.AdamW(params, lr=lr, weight_decay=weight_decay)
-    scheduler = None
+
+    grad_accum = cfg["optim"].get("grad_accum", 1)
+    max_epochs = 1 if args.dry_run else cfg["optim"].get("max_epochs", 1)
+    updates_per_epoch = max(1, math.ceil(len(train_loader) / grad_accum))
+    total_updates = max_epochs * updates_per_epoch
+    scheduler = build_scheduler(cfg, optimizer, total_updates)
 
     run_name = cfg["logging"].get("run_name", "run")
     run_dir = args.run_dir or Path("results/checkpoints") / run_name
     writer = SummaryWriter(log_dir=run_dir / "tb")
 
-    max_epochs = 1 if args.dry_run else cfg["optim"].get("max_epochs", 1)
     best_val = float("inf")
     global_step = 0
 
@@ -327,7 +413,7 @@ def main() -> None:
             scheduler=scheduler,
             loader=train_loader,
             device=device,
-            grad_accum=cfg["optim"].get("grad_accum", 1),
+            grad_accum=grad_accum,
             clip_grad_norm=cfg["optim"].get("clip_grad_norm", 0.0),
             log_interval=cfg["logging"].get("log_interval", 10),
             writer=writer,

@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from src.data.index_dataset import load_index
 from src.data.vocab import Vocab
@@ -197,6 +197,7 @@ def make_dataloader(
     spec_augment_cfg: Optional[SpecAugmentConfig] = None,
     include_teacher: bool = True,
     strict: bool = True,
+    max_items: Optional[int] = None,
 ) -> DataLoader:
     dataset = EMGFeatureDataset(
         index_path=index_path,
@@ -207,6 +208,9 @@ def make_dataloader(
         include_teacher=include_teacher,
         strict=strict,
     )
+    if max_items is not None:
+        max_items = min(max_items, len(dataset))
+        dataset = Subset(dataset, range(max_items))
     spec_aug = SpecAugment(spec_augment_cfg) if spec_augment_cfg else None
     return DataLoader(
         dataset,

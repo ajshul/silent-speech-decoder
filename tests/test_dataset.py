@@ -9,6 +9,7 @@ from src.data.dataset import (
     SpecAugment,
     SpecAugmentConfig,
     collate_batch,
+    make_dataloader,
 )
 from src.data.vocab import Vocab
 
@@ -91,3 +92,49 @@ def test_specaugment_masks_time_and_freq() -> None:
     assert out.shape == feat.shape
     # At least one zeroed region in time or freq.
     assert (out == 0).any()
+
+
+def test_make_dataloader_respects_max_items(tmp_path: Path) -> None:
+    features_root = tmp_path / "features"
+    emg_dir = features_root / "emg" / "split" / "spk"
+    teacher_dir = features_root / "teacher" / "split" / "spk"
+    emg_dir.mkdir(parents=True)
+    teacher_dir.mkdir(parents=True)
+
+    for i in range(3):
+        np.save(emg_dir / f"00{i}.npy", np.random.randn(6, 2, 3).astype(np.float32))
+        np.save(teacher_dir / f"00{i}.npy", np.random.randn(4, 5).astype(np.float32))
+
+    index_path = tmp_path / "index.parquet"
+    _write_index(
+        index_path,
+        [
+            {
+                "utterance_id": f"split/spk/00{i}",
+                "split": "train",
+                "emg_path": "dummy",
+                "audio_path": "dummy",
+                "transcript": "ab",
+            }
+            for i in range(3)
+        ],
+    )
+
+    vocab = _make_vocab()
+    loader = make_dataloader(
+        index_path=index_path,
+        features_root=features_root,
+        splits=["train"],
+        subsets=None,
+        vocab=vocab,
+        batch_size=4,
+        shuffle=False,
+        num_workers=0,
+        spec_augment_cfg=None,
+        include_teacher=True,
+        max_items=2,
+    )
+
+    assert len(loader) == 1  # 2 items capped to 1 batch of size 4
+    batch = next(iter(loader))
+    assert batch["tokens"].shape[0] == 2
