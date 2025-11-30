@@ -341,6 +341,8 @@ def main() -> None:
         spec_augment_cfg=spec_cfg,
         include_teacher=True,
         max_items=train_limit,
+        pin_memory=cfg["optim"].get("pin_memory", False),
+        prefetch_factor=cfg["optim"].get("prefetch_factor"),
     )
     val_loader = make_dataloader(
         index_path=Path(cfg["data"]["index"]),
@@ -354,6 +356,8 @@ def main() -> None:
         spec_augment_cfg=None,
         include_teacher=True,
         max_items=val_limit,
+        pin_memory=cfg["optim"].get("pin_memory", False),
+        prefetch_factor=cfg["optim"].get("prefetch_factor"),
     )
 
     logger.info(

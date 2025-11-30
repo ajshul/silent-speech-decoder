@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+import functools
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
@@ -15,7 +16,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from src.data.index_dataset import load_index
 from src.data.vocab import Vocab
-
+import functools
 
 @dataclass
 class SpecAugmentConfig:
@@ -198,6 +199,8 @@ def make_dataloader(
     include_teacher: bool = True,
     strict: bool = True,
     max_items: Optional[int] = None,
+    pin_memory: bool = False,
+    prefetch_factor: int | None = None,
 ) -> DataLoader:
     dataset = EMGFeatureDataset(
         index_path=index_path,
@@ -217,5 +220,7 @@ def make_dataloader(
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
-        collate_fn=lambda batch: collate_batch(batch, spec_aug, vocab=vocab),
+        collate_fn=functools.partial(collate_batch, spec_augment=spec_aug, vocab=vocab),
+        pin_memory=pin_memory,
+        prefetch_factor=prefetch_factor,
     )
