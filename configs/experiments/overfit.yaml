@@ -1,0 +1,43 @@
+base_config: configs/mps.yaml
+# Resolved configs and run outputs go under this folder (timestamped subdir).
+output_dir: results/sweeps/overfit
+
+# Applied to every experiment; tweak to make overfit checks fast/stable.
+common_overrides:
+  optim:
+    batch_size: 4
+    grad_accum: 1
+    weight_decay: 0.0
+    max_epochs: 15
+  model:
+    ctc_dropout: 0.0
+  logging:
+    log_interval: 1
+
+# Limit train/val items (batches are capped in the train script).
+overfit_batches: 1
+
+experiments:
+  - name: no_scheduler
+    overrides:
+      optim:
+        scheduler: null
+  - name: cosine_anneal
+    overrides:
+      optim:
+        scheduler:
+          name: cosine
+          t_max: 15
+          eta_min: 1.0e-05
+  - name: linear_warmup
+    overrides:
+      optim:
+        scheduler:
+          name: linear
+          warmup_steps: 5
+          total_steps: 15
+  - name: ctc_heavier
+    overrides:
+      loss:
+        lambda_ctc: 0.6
+        lambda_distill: 0.4
