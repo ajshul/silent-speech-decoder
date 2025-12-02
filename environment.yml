@@ -56,6 +56,8 @@ dependencies:
     - tqdm
     - pyyaml
     - python-dotenv
+    - pyctcdecode
+    - kenlm
     
     # Dimensionality reduction for visualization
     - umap-learn

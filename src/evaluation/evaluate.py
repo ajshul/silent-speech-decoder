@@ -6,17 +6,17 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence
 
 import jiwer
 import torch
-import yaml
 from torch.utils.data import DataLoader
 
 from src.data.dataset import make_dataloader
 from src.data.vocab import Vocab
 from src.models.emg_encoder import EMGConformerEncoder, EncoderConfig
 from src.models.heads import CTCHead, ProjectionHead
+from src.decoding.ctc import build_decoder
 
 logger = logging.getLogger(__name__)
 
@@ -29,47 +29,6 @@ def _resolve_device(force: str | None = None) -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
-
-
-def greedy_decode(log_probs: torch.Tensor, lengths: torch.Tensor, blank_id: int) -> List[List[int]]:
-    """Argmax decode per frame, collapse repeats and blanks."""
-    preds = torch.argmax(log_probs, dim=-1)  # (batch, time)
-    decoded: List[List[int]] = []
-    for seq, length in zip(preds, lengths):
-        tokens: List[int] = []
-        prev = None
-        for i in range(int(length)):
-            t = int(seq[i])
-            if t == blank_id:
-                prev = t
-                continue
-            if t == prev:
-                continue
-            tokens.append(t)
-            prev = t
-        decoded.append(tokens)
-    return decoded
-
-
-def decode_batch(
-    encoder: torch.nn.Module,
-    ctc_head: torch.nn.Module,
-    batch: Dict,
-    device: torch.device,
-    blank_id: int,
-    vocab: Vocab,
-) -> Tuple[List[str], List[str], List[str]]:
-    emg = batch["emg"].to(device)
-    emg_lengths = batch["emg_lengths"].to(device)
-    transcripts = batch["transcript"]
-    utterance_ids = batch["utterance_id"]
-
-    with torch.no_grad():
-        enc_out, enc_lengths = encoder(emg, emg_lengths)
-        log_probs = ctc_head(enc_out)
-    token_seqs = greedy_decode(log_probs.cpu(), enc_lengths.cpu(), blank_id=blank_id)
-    decoded = [vocab.decode(seq) for seq in token_seqs]
-    return utterance_ids, transcripts, decoded
 
 
 def compute_metrics(refs: Sequence[str], hyps: Sequence[str]) -> Dict[str, float]:
@@ -141,6 +100,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, help="cpu/mps/cuda (auto if unset).")
     parser.add_argument("--output", type=Path, help="Where to store outputs (default: results/eval/<run_name>).")
     parser.add_argument("--run-name", type=str, help="Override run name for output folder.")
+    parser.add_argument(
+        "--decoder",
+        choices=["greedy", "beam"],
+        default=None,
+        help="Decode strategy (beam supports optional KenLM LM).",
+    )
+    parser.add_argument("--lm-path", type=Path, help="Path to KenLM ARPA file for beam decoding.")
+    parser.add_argument("--beam-width", type=int, help="Beam width for beam search decoding.")
+    parser.add_argument("--alpha", type=float, help="LM weight for beam decoding.")
+    parser.add_argument("--beta", type=float, help="Word bonus for beam decoding.")
+    parser.add_argument("--beam-prune-logp", type=float, help="Prune beams below this logp.")
     return parser.parse_args()
 
 
@@ -158,6 +128,34 @@ def main() -> None:
     subsets = args.subsets
 
     vocab = Vocab.from_json(Path(data_cfg["vocab"]))
+
+    decoding_cfg = cfg.get("decoding", {})
+    decoder_type = args.decoder or decoding_cfg.get("type", "greedy")
+    lm_path = args.lm_path or decoding_cfg.get("lm_path")
+    beam_width = args.beam_width if args.beam_width is not None else decoding_cfg.get("beam_width", 50)
+    alpha = args.alpha if args.alpha is not None else decoding_cfg.get("alpha", 0.6)
+    beta = args.beta if args.beta is not None else decoding_cfg.get("beta", 0.0)
+    beam_prune_logp = args.beam_prune_logp if args.beam_prune_logp is not None else decoding_cfg.get(
+        "beam_prune_logp", -10.0
+    )
+    decoder = build_decoder(
+        method=decoder_type,
+        vocab=vocab,
+        lm_path=Path(lm_path) if lm_path else None,
+        beam_width=int(beam_width),
+        alpha=float(alpha),
+        beta=float(beta),
+        beam_prune_logp=float(beam_prune_logp),
+    )
+    logger.info(
+        "Decoder: %s | LM: %s | beam_width: %s | alpha: %.2f | beta: %.2f | beam_prune_logp: %.1f",
+        decoder_type,
+        lm_path if lm_path else "none",
+        beam_width,
+        alpha,
+        beta,
+        beam_prune_logp,
+    )
 
     # Infer input dim from metadata saved in config if present, else from a sample batch.
     encoder_cfg = cfg["model"]["encoder"]
@@ -212,14 +210,17 @@ def main() -> None:
     )
 
     for batch in loader:
-        utterance_ids, refs, hyps = decode_batch(
-            encoder=encoder,
-            ctc_head=ctc_head,
-            batch=batch,
-            device=device,
-            blank_id=vocab.blank_id,
-            vocab=vocab,
-        )
+        emg = batch["emg"].to(device)
+        emg_lengths = batch["emg_lengths"].to(device)
+        transcripts = batch["transcript"]
+        utterance_ids = batch["utterance_id"]
+
+        with torch.no_grad():
+            enc_out, enc_lengths = encoder(emg, emg_lengths)
+            log_probs = ctc_head(enc_out)
+        hyps = decoder(log_probs.cpu(), enc_lengths.cpu())
+        refs = transcripts
+
         for uid, ref, hyp in zip(utterance_ids, refs, hyps):
             all_refs.append(ref)
             all_hyps.append(hyp)
