@@ -77,6 +77,9 @@ class EMGFeatureDataset(Dataset):
             if "subset" not in df.columns:
                 raise KeyError("Index missing 'subset' column; re-run indexing.")
             df = df[df["subset"].isin(subsets)].reset_index(drop=True)
+        # Normalize transcripts and drop empty/heading-only rows.
+        df["transcript_norm"] = df["transcript"].apply(normalize_transcript)
+        df = df[df["transcript_norm"].astype(bool)].reset_index(drop=True)
         self.df = df
         self.features_root = features_root
         self.vocab = vocab
@@ -109,7 +112,7 @@ class EMGFeatureDataset(Dataset):
         utterance_id = row["utterance_id"]
         emg = self._load_emg(utterance_id)
         teacher = self._load_teacher(utterance_id) if self.include_teacher else None
-        transcript = normalize_transcript(row["transcript"])
+        transcript = row["transcript_norm"]
         tokens = torch.tensor(self.vocab.encode(transcript), dtype=torch.long)
         return {
             "utterance_id": utterance_id,
