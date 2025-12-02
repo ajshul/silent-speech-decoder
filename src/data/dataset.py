@@ -112,7 +112,8 @@ class EMGFeatureDataset(Dataset):
         utterance_id = row["utterance_id"]
         emg = self._load_emg(utterance_id)
         teacher = self._load_teacher(utterance_id) if self.include_teacher else None
-        transcript = row["transcript_norm"]
+        # Fallback for older in-memory datasets without the normalized column.
+        transcript = row["transcript_norm"] if "transcript_norm" in row else normalize_transcript(row["transcript"])
         tokens = torch.tensor(self.vocab.encode(transcript), dtype=torch.long)
         return {
             "utterance_id": utterance_id,
