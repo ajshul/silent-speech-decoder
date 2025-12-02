@@ -15,8 +15,8 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from src.data.index_dataset import load_index
+from src.data.text_normalizer import normalize_transcript
 from src.data.vocab import Vocab
-import functools
 
 @dataclass
 class SpecAugmentConfig:
@@ -109,14 +109,15 @@ class EMGFeatureDataset(Dataset):
         utterance_id = row["utterance_id"]
         emg = self._load_emg(utterance_id)
         teacher = self._load_teacher(utterance_id) if self.include_teacher else None
-        tokens = torch.tensor(self.vocab.encode(row["transcript"]), dtype=torch.long)
+        transcript = normalize_transcript(row["transcript"])
+        tokens = torch.tensor(self.vocab.encode(transcript), dtype=torch.long)
         return {
             "utterance_id": utterance_id,
             "emg": emg,
             "emg_length": emg.shape[0],
             "teacher": teacher,
             "teacher_length": teacher.shape[0] if teacher is not None else 0,
-            "transcript": row["transcript"],
+            "transcript": transcript,
             "tokens": tokens,
             "token_length": len(tokens),
         }
