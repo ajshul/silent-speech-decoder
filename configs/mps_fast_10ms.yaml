@@ -34,8 +34,9 @@ model:
   ctc_dropout: 0.1
 
 loss:
-  lambda_distill: 0.4
-  lambda_ctc: 0.6
+  lambda_distill: 0.25
+  lambda_ctc: 0.75
+  distill_warmup_epochs: 3
 
 optim:
   batch_size: 6
@@ -47,6 +48,20 @@ optim:
   num_workers: 4
   prefetch_factor: 2
   pin_memory: true
+  scheduler:
+    name: linear
+    warmup_steps: 500
+  early_stopping:
+    patience: 4
+    min_delta: 0.0
+
+augmentation:
+  specaugment:
+    time_masks: 2
+    time_mask_width: 0.05
+    freq_masks: 2
+    freq_mask_width: 8
+    p: 0.5
 
 logging:
   seed: 42

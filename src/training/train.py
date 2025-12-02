@@ -399,14 +399,16 @@ def main() -> None:
     )
 
     encoder, projection, ctc_head = build_model(cfg, input_dim=input_dim, vocab_size=vocab.size, device=device)
+    base_loss_weights = LossWeights(
+        lambda_distill=float(cfg["loss"]["lambda_distill"]),
+        lambda_ctc=float(cfg["loss"]["lambda_ctc"]),
+    )
     loss_fn = DistillationCTCLoss(
         vocab_size=vocab.size,
         blank_id=vocab.blank_id,
-        weights=LossWeights(
-            lambda_distill=cfg["loss"]["lambda_distill"],
-            lambda_ctc=cfg["loss"]["lambda_ctc"],
-        ),
+        weights=base_loss_weights,
     ).to(device)
+    distill_warmup_epochs = int(cfg["loss"].get("distill_warmup_epochs", 0))
 
     params = list(encoder.parameters()) + list(projection.parameters()) + list(ctc_head.parameters())
     lr = float(cfg["optim"]["lr"])
@@ -424,9 +426,21 @@ def main() -> None:
     writer = SummaryWriter(log_dir=run_dir / "tb")
 
     best_val = float("inf")
+    best_epoch = 0
     global_step = 0
+    early_cfg = cfg["optim"].get("early_stopping", {})
+    patience = int(early_cfg.get("patience", 0)) if early_cfg else 0
+    min_delta = float(early_cfg.get("min_delta", 0.0)) if early_cfg else 0.0
+    patience_counter = 0
 
     for epoch in range(1, max_epochs + 1):
+        warmup_scale = 1.0
+        if distill_warmup_epochs > 0:
+            warmup_scale = min(1.0, epoch / float(distill_warmup_epochs))
+        loss_fn.weights = LossWeights(
+            lambda_distill=base_loss_weights.lambda_distill * warmup_scale,
+            lambda_ctc=base_loss_weights.lambda_ctc,
+        )
         start = time.time()
         global_step = train_one_epoch(
             epoch=epoch,
@@ -454,20 +468,28 @@ def main() -> None:
             device=device,
         )
         logger.info(
-            "Epoch %d done in %.1fs | val total %.4f (ctc %.4f, distill %.4f)",
+            "Epoch %d done in %.1fs | val total %.4f (ctc %.4f, distill %.4f) | loss weights ctc %.2f distill %.2f",
             epoch,
             train_time,
             val_losses["total"],
             val_losses["ctc"],
             val_losses["distill"],
+            loss_fn.weights.lambda_ctc,
+            loss_fn.weights.lambda_distill,
         )
         writer.add_scalar("val/total_loss", val_losses["total"], epoch)
         writer.add_scalar("val/ctc_loss", val_losses["ctc"], epoch)
         writer.add_scalar("val/distill_loss", val_losses["distill"], epoch)
+        writer.add_scalar("train/lambda_ctc", loss_fn.weights.lambda_ctc, epoch)
+        writer.add_scalar("train/lambda_distill", loss_fn.weights.lambda_distill, epoch)
 
-        is_best = val_losses["total"] < best_val
+        is_best = val_losses["total"] < (best_val - min_delta)
         if is_best:
             best_val = val_losses["total"]
+            best_epoch = epoch
+            patience_counter = 0
+        else:
+            patience_counter += 1
         save_checkpoint(
             run_dir=run_dir,
             epoch=epoch,
@@ -482,6 +504,12 @@ def main() -> None:
         )
 
         if args.dry_run:
+            break
+
+        if patience and patience_counter >= patience:
+            logger.info(
+                "Early stopping at epoch %d (best epoch %d val %.4f)", epoch, best_epoch, best_val
+            )
             break
 
     writer.close()

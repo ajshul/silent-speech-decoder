@@ -55,11 +55,10 @@ def build_beam_decoder(
         raise ImportError("pyctcdecode is required for beam search decoding") from exc
 
     # Reorder labels so blank is first to satisfy pyctcdecode expectations.
-    perm = [vocab.blank_id] + [i for i in range(vocab.size) if i != vocab.blank_id]
-    labels = [vocab.tokens[i] for i in perm]
-    labels[0] = ""  # blank token
-    if vocab.pad_id != vocab.blank_id and vocab.pad_id in perm:
-        labels[perm.index(vocab.pad_id)] = ""  # treat pad as silence
+    # Drop pad from the label set to avoid duplicate "" entries (blank + pad)
+    # and merge its probability mass into blank before decoding.
+    non_blank_pad_indices = [i for i in range(vocab.size) if i not in {vocab.blank_id, vocab.pad_id}]
+    labels = [""] + [vocab.tokens[i] for i in non_blank_pad_indices]
 
     decoder = build_ctcdecoder(
         labels=labels,
@@ -70,8 +69,16 @@ def build_beam_decoder(
 
     def decode(log_probs: torch.Tensor, lengths: torch.Tensor) -> List[str]:
         log_probs_np = log_probs.detach().cpu().numpy()
-        # Permute vocab dimension once to match decoder labels.
-        log_probs_np = log_probs_np[:, :, perm]
+        blank_logp = log_probs_np[:, :, vocab.blank_id]
+        if vocab.pad_id != vocab.blank_id and 0 <= vocab.pad_id < log_probs_np.shape[-1]:
+            pad_logp = log_probs_np[:, :, vocab.pad_id]
+            blank_logp = np.logaddexp(blank_logp, pad_logp)
+
+        # Permute vocab dimension once to match decoder labels (blank first).
+        stacked = [blank_logp[:, :, None]]
+        if non_blank_pad_indices:
+            stacked.append(log_probs_np[:, :, non_blank_pad_indices])
+        log_probs_np = np.concatenate(stacked, axis=2)
         hyps: List[str] = []
         for i, length in enumerate(lengths):
             lp = log_probs_np[i, : int(length)]
