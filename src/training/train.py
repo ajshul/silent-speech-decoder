@@ -18,6 +18,7 @@ import torch.optim as optim
 import yaml
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
 from src.data.dataset import SpecAugmentConfig, make_dataloader
 from src.data.vocab import Vocab
@@ -197,6 +198,13 @@ def train_one_epoch(
             writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
 
     optimizer.zero_grad(set_to_none=True)
+    pbar = tqdm(
+        total=len(loader),
+        desc=f"Epoch {epoch}",
+        leave=False,
+        dynamic_ncols=True,
+    )
+    next_log = log_interval
     for batch_idx, batch in enumerate(loader):
         emg = batch["emg"].to(device)
         emg_lengths = batch["emg_lengths"].to(device)
@@ -224,10 +232,23 @@ def train_one_epoch(
         if (batch_idx + 1) % grad_accum == 0:
             optimizer_step()
 
+        # Lightweight progress updates: only refresh text every log_interval to avoid overhead.
+        if (batch_idx + 1) >= next_log or (batch_idx + 1) == len(loader):
+            if last_losses is not None:
+                pbar.set_postfix(
+                    total=f"{last_losses['total'].item():.3f}",
+                    ctc=f"{last_losses['ctc'].item():.3f}",
+                    distill=f"{last_losses['distill'].item():.3f}",
+                    lr=f"{optimizer.param_groups[0]['lr']:.2e}",
+                )
+            next_log += log_interval
+        pbar.update(1)
+
     # Final step for leftover gradients when len(loader) is not divisible by grad_accum.
     if len(loader) % grad_accum != 0:
         optimizer_step()
 
+    pbar.close()
     return global_step
 
 
