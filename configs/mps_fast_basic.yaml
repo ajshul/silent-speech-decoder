@@ -23,10 +23,10 @@ features:
 
 model:
   encoder:
-    d_model: 288        # wider hidden size
-    num_layers: 8       # slightly deeper
-    num_heads: 8        # keeps d_model divisible by heads
-    ffn_dim: 1152       # ~4x d_model for balance
+    d_model: 256
+    num_layers: 6
+    num_heads: 4
+    ffn_dim: 512
     depthwise_conv_kernel_size: 15
     dropout: 0.1
     subsample_factor: 2
@@ -34,36 +34,21 @@ model:
   ctc_dropout: 0.1
 
 loss:
-  lambda_distill: 0.25
-  lambda_ctc: 0.75
-  distill_warmup_epochs: 3
+  lambda_distill: 0.4
+  lambda_ctc: 0.6
 
 optim:
-  batch_size: 3      # modestly reduced for the larger model on MPS
-  grad_accum: 2
+  batch_size: 6
+  grad_accum: 1
   lr: 3e-4
   weight_decay: 1e-2
-  max_epochs: 40
+  max_epochs: 50
   clip_grad_norm: 5.0
-  num_workers: 2
-  prefetch_factor: 1
+  num_workers: 4
+  prefetch_factor: 2
   pin_memory: true
-  scheduler:
-    name: linear
-    warmup_steps: 500
-  early_stopping:
-    patience: 4
-    min_delta: 0.0
-
-augmentation:
-  specaugment:
-    time_masks: 2
-    time_mask_width: 0.05
-    freq_masks: 2
-    freq_mask_width: 8
-    p: 0.5
 
 logging:
   seed: 42
-  run_name: mps_goldilocks
+  run_name: mps_fast_basic
   log_interval: 10

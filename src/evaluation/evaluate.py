@@ -125,7 +125,10 @@ def main() -> None:
     index_path = args.index or Path(data_cfg["index"])
     features_root = args.features_root or Path(data_cfg["features_root"])
     splits = args.splits or data_cfg.get("val_splits", ["voiced_parallel_data"])
-    subsets = args.subsets
+    default_subsets = data_cfg.get("eval_subsets") or data_cfg.get("val_subsets")
+    if default_subsets is None:
+        default_subsets = ["val"]
+    subsets = args.subsets if args.subsets is not None else default_subsets
 
     vocab = Vocab.from_json(Path(data_cfg["vocab"]))
 
