@@ -111,6 +111,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alpha", type=float, help="LM weight for beam decoding.")
     parser.add_argument("--beta", type=float, help="Word bonus for beam decoding.")
     parser.add_argument("--beam-prune-logp", type=float, help="Prune beams below this logp.")
+    parser.add_argument("--blank-bias", type=float, default=0.0, help="Additive bias to blank log-prob (helps tune insertions/deletions).")
     return parser.parse_args()
 
 
@@ -141,6 +142,7 @@ def main() -> None:
     beam_prune_logp = args.beam_prune_logp if args.beam_prune_logp is not None else decoding_cfg.get(
         "beam_prune_logp", -10.0
     )
+    blank_bias = float(args.blank_bias)
     decoder = build_decoder(
         method=decoder_type,
         vocab=vocab,
@@ -149,15 +151,17 @@ def main() -> None:
         alpha=float(alpha),
         beta=float(beta),
         beam_prune_logp=float(beam_prune_logp),
+        blank_bias=blank_bias,
     )
     logger.info(
-        "Decoder: %s | LM: %s | beam_width: %s | alpha: %.2f | beta: %.2f | beam_prune_logp: %.1f",
+        "Decoder: %s | LM: %s | beam_width: %s | alpha: %.2f | beta: %.2f | beam_prune_logp: %.1f | blank_bias: %.2f",
         decoder_type,
         lm_path if lm_path else "none",
         beam_width,
         alpha,
         beta,
         beam_prune_logp,
+        blank_bias,
     )
 
     # Infer input dim from metadata saved in config if present, else from a sample batch.

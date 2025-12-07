@@ -13,8 +13,11 @@ from src.data.vocab import Vocab
 DecoderFn = Callable[[torch.Tensor, torch.Tensor], List[str]]
 
 
-def _greedy_decode(log_probs: torch.Tensor, lengths: torch.Tensor, blank_id: int) -> List[str]:
+def _greedy_decode(log_probs: torch.Tensor, lengths: torch.Tensor, blank_id: int, blank_bias: float = 0.0) -> List[str]:
     """Argmax per frame, collapse repeats/blanks."""
+    if blank_bias != 0.0:
+        log_probs = log_probs.clone()
+        log_probs[:, :, blank_id] = log_probs[:, :, blank_id] + blank_bias
     preds = torch.argmax(log_probs, dim=-1)  # (batch, time)
     decoded: List[List[int]] = []
     for seq, length in zip(preds, lengths):
@@ -33,9 +36,9 @@ def _greedy_decode(log_probs: torch.Tensor, lengths: torch.Tensor, blank_id: int
     return decoded
 
 
-def build_greedy_decoder(vocab: Vocab) -> DecoderFn:
+def build_greedy_decoder(vocab: Vocab, blank_bias: float = 0.0) -> DecoderFn:
     def decode(log_probs: torch.Tensor, lengths: torch.Tensor) -> List[str]:
-        token_seqs = _greedy_decode(log_probs, lengths, blank_id=vocab.blank_id)
+        token_seqs = _greedy_decode(log_probs, lengths, blank_id=vocab.blank_id, blank_bias=blank_bias)
         return [vocab.decode(seq) for seq in token_seqs]
 
     return decode
@@ -48,6 +51,7 @@ def build_beam_decoder(
     alpha: float = 0.6,
     beta: float = 0.0,
     beam_prune_logp: float = -10.0,
+    blank_bias: float = 0.0,
 ) -> DecoderFn:
     try:
         from pyctcdecode import build_ctcdecoder
@@ -70,6 +74,8 @@ def build_beam_decoder(
     def decode(log_probs: torch.Tensor, lengths: torch.Tensor) -> List[str]:
         log_probs_np = log_probs.detach().cpu().numpy()
         blank_logp = log_probs_np[:, :, vocab.blank_id]
+        if blank_bias != 0.0:
+            blank_logp = blank_logp + float(blank_bias)
         if vocab.pad_id != vocab.blank_id and 0 <= vocab.pad_id < log_probs_np.shape[-1]:
             pad_logp = log_probs_np[:, :, vocab.pad_id]
             blank_logp = np.logaddexp(blank_logp, pad_logp)
@@ -101,6 +107,7 @@ def build_decoder(
     alpha: float = 0.6,
     beta: float = 0.0,
     beam_prune_logp: float = -10.0,
+    blank_bias: float = 0.0,
 ) -> DecoderFn:
     if method.lower() == "beam":
         return build_beam_decoder(
@@ -110,5 +117,6 @@ def build_decoder(
             alpha=alpha,
             beta=beta,
             beam_prune_logp=beam_prune_logp,
+            blank_bias=blank_bias,
         )
-    return build_greedy_decoder(vocab)
+    return build_greedy_decoder(vocab, blank_bias=blank_bias)
