@@ -1,0 +1,82 @@
+data:
+  root: data/emg_data
+  index: results/index.parquet
+  features_root: results/features
+  train_splits: [silent_parallel_data]
+  val_splits: [silent_parallel_data]
+  train_subsets: [eval_silent]   # silent data does not have hashed splits; reuse eval_silent for train/val or override as needed
+  val_subsets: [eval_silent]
+  vocab: configs/vocab.json
+  include_teacher: false
+  teacher_strict: false
+
+features:
+  emg:
+    sample_rate: 1000
+    n_fft: 320
+    hop_length: 10
+    n_mels: 80
+    normalize: per_file
+  teacher:
+    model_name: microsoft/wavlm-base-plus
+    layer: 9
+    sample_rate: 16000
+    dim: 768   # fallback dim used when teacher is absent
+
+model:
+  encoder:
+    d_model: 288
+    num_layers: 6
+    num_heads: 6
+    ffn_dim: 1152
+    depthwise_conv_kernel_size: 15
+    dropout: 0.1
+    subsample_factor: 4  # higher subsampling to shrink CTC time length for faster CPU-bound CTCLoss
+    input_dim: 640
+  projection_dim: 768
+  ctc_dropout: 0.1
+
+loss:
+  lambda_distill: 0.0
+  lambda_ctc: 1.0
+  distill_warmup_epochs: 0
+
+optim:
+  batch_size: 6  # slightly larger batch since subsampling lowers memory/compute
+  grad_accum: 1
+  lr: 2e-4
+  weight_decay: 7.5e-3
+  max_epochs: 30
+  clip_grad_norm: 5.0
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
+  scheduler:
+    name: warmup_hold
+    warmup_steps: 400
+  early_stopping:
+    patience: 5
+    min_delta: 0.0
+
+augmentation:
+  specaugment:
+    time_masks: 1
+    time_mask_width: 0.05
+    freq_masks: 1
+    freq_mask_width: 6
+    p: 0.0  # disable for silent fine-tune to reduce overhead and keep signal clean
+  channel_dropout:
+    p: 0.0
+
+decoding:
+  type: beam
+  beam_width: 50
+  alpha: 0.4
+  beta: 0.0
+  beam_prune_logp: -10.0
+  lm_path: null
+
+logging:
+  seed: 42
+  run_name: mps_silent_finetune
+  log_interval: 10

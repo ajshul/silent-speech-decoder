@@ -327,6 +327,11 @@ def parse_args() -> argparse.Namespace:
         help="Override checkpoint/log directory. Defaults to results/checkpoints/<run_name>.",
     )
     parser.add_argument(
+        "--init-checkpoint",
+        type=Path,
+        help="Optional checkpoint to load encoder/projection/CTC weights from (for fine-tuning).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Run a single epoch over a tiny subset for debugging.",
@@ -378,6 +383,8 @@ def main() -> None:
         shuffle_train = False
         logger.info("Overfitting on %d batches (~%d items) for train/val.", args.overfit_batches, train_limit)
 
+    include_teacher = bool(cfg["data"].get("include_teacher", True))
+    teacher_strict = bool(cfg["data"].get("teacher_strict", True))
     train_loader = make_dataloader(
         index_path=Path(cfg["data"]["index"]),
         features_root=Path(cfg["data"]["features_root"]),
@@ -388,11 +395,12 @@ def main() -> None:
         shuffle=shuffle_train,
         num_workers=cfg["optim"].get("num_workers", 0),
         spec_augment_cfg=spec_cfg,
-        include_teacher=True,
+        include_teacher=include_teacher,
         max_items=train_limit,
         pin_memory=cfg["optim"].get("pin_memory", False),
         prefetch_factor=cfg["optim"].get("prefetch_factor"),
         channel_dropout_cfg=channel_dropout_cfg,
+        strict=teacher_strict,
     )
     val_loader = make_dataloader(
         index_path=Path(cfg["data"]["index"]),
@@ -404,11 +412,12 @@ def main() -> None:
         shuffle=False,
         num_workers=cfg["optim"].get("num_workers", 0),
         spec_augment_cfg=None,
-        include_teacher=True,
+        include_teacher=include_teacher,
         max_items=val_limit,
         pin_memory=cfg["optim"].get("pin_memory", False),
         prefetch_factor=cfg["optim"].get("prefetch_factor"),
         channel_dropout_cfg=None,
+        strict=teacher_strict,
     )
 
     logger.info(
@@ -429,6 +438,12 @@ def main() -> None:
     )
 
     encoder, projection, ctc_head = build_model(cfg, input_dim=input_dim, vocab_size=vocab.size, device=device)
+    if args.init_checkpoint:
+        logger.info("Loading initial weights from %s", args.init_checkpoint)
+        payload = torch.load(args.init_checkpoint, map_location=device)
+        encoder.load_state_dict(payload["encoder"], strict=False)
+        projection.load_state_dict(payload["projection"], strict=False)
+        ctc_head.load_state_dict(payload["ctc_head"], strict=False)
     base_loss_weights = LossWeights(
         lambda_distill=float(cfg["loss"]["lambda_distill"]),
         lambda_ctc=float(cfg["loss"]["lambda_ctc"]),
