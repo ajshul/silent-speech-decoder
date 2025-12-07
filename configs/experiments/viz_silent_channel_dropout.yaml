@@ -21,7 +21,7 @@ features:
     model_name: microsoft/wavlm-base-plus
     layer: 9
     sample_rate: 16000
-    dim: 768   # fallback dim used when teacher is absent
+    dim: 768
 
 model:
   encoder:
@@ -31,7 +31,7 @@ model:
     ffn_dim: 1152
     depthwise_conv_kernel_size: 15
     dropout: 0.1
-    subsample_factor: 2  # preserve CTC resolution on silent EMG
+    subsample_factor: 2  # align with baseline resolution
     input_dim: 640
   projection_dim: 768
   ctc_dropout: 0.1
@@ -42,7 +42,7 @@ loss:
   distill_warmup_epochs: 0
 
 optim:
-  batch_size: 4  # smaller batch to handle longer sequences at subsample 2
+  batch_size: 4
   grad_accum: 1
   lr: 1e-4
   weight_decay: 7.5e-3
@@ -64,9 +64,10 @@ augmentation:
     time_mask_width: 0.05
     freq_masks: 1
     freq_mask_width: 6
-    p: 0.05  # light regularization only
+    p: 0.05
   channel_dropout:
-    p: 0.0
+    p: 0.10
+    max_channels: 1
 
 decoding:
   type: beam
@@ -78,5 +79,5 @@ decoding:
 
 logging:
   seed: 42
-  run_name: mps_silent_finetune
+  run_name: viz_silent_channel_dropout
   log_interval: 10

@@ -82,16 +82,15 @@ def _find_audio_path(base_dir: Path, stem: str) -> Optional[Path]:
 
 
 def assign_subset(split: str, utterance_id: str) -> str:
-    """Deterministic train/val/test assignment for voiced; tag others for eval."""
-    if split == "voiced_parallel_data":
+    """Deterministic train/val/test assignment via MD5 hash for parallel data."""
+    if split == "voiced_parallel_data" or split == "silent_parallel_data":
+        # Apply consistent 80/10/10 hashing to both voiced and silent parallel data
         h = int(hashlib.md5(utterance_id.encode("utf-8")).hexdigest(), 16) % 100
         if h < 80:
             return "train"
         if h < 90:
             return "val"
         return "test"
-    if split == "silent_parallel_data":
-        return "eval_silent"
     if split.startswith("closed_vocab"):
         return "closed_vocab"
     return "unused"

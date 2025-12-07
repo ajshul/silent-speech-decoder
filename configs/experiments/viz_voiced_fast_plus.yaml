@@ -2,13 +2,11 @@ data:
   root: data/emg_data
   index: results/index.parquet
   features_root: results/features
-  train_splits: [silent_parallel_data]
-  val_splits: [silent_parallel_data]
+  train_splits: [voiced_parallel_data]
+  val_splits: [voiced_parallel_data]
   train_subsets: [train]
   val_subsets: [val]
   vocab: configs/vocab.json
-  include_teacher: false
-  teacher_strict: false
 
 features:
   emg:
@@ -21,7 +19,7 @@ features:
     model_name: microsoft/wavlm-base-plus
     layer: 9
     sample_rate: 16000
-    dim: 768   # fallback dim used when teacher is absent
+    dim: 768
 
 model:
   encoder:
@@ -30,22 +28,22 @@ model:
     num_heads: 6
     ffn_dim: 1152
     depthwise_conv_kernel_size: 15
-    dropout: 0.1
-    subsample_factor: 2  # preserve CTC resolution on silent EMG
+    dropout: 0.12
+    subsample_factor: 2
     input_dim: 640
   projection_dim: 768
-  ctc_dropout: 0.1
+  ctc_dropout: 0.12
 
 loss:
-  lambda_distill: 0.0
-  lambda_ctc: 1.0
-  distill_warmup_epochs: 0
+  lambda_distill: 0.35
+  lambda_ctc: 0.65
+  distill_warmup_epochs: 2
 
 optim:
-  batch_size: 4  # smaller batch to handle longer sequences at subsample 2
+  batch_size: 5
   grad_accum: 1
-  lr: 1e-4
-  weight_decay: 7.5e-3
+  lr: 3e-4
+  weight_decay: 1e-2
   max_epochs: 30
   clip_grad_norm: 5.0
   num_workers: 4
@@ -53,20 +51,18 @@ optim:
   pin_memory: true
   scheduler:
     name: warmup_hold
-    warmup_steps: 400
+    warmup_steps: 800
   early_stopping:
     patience: 5
     min_delta: 0.0
 
 augmentation:
   specaugment:
-    time_masks: 1
+    time_masks: 2
     time_mask_width: 0.05
-    freq_masks: 1
-    freq_mask_width: 6
-    p: 0.05  # light regularization only
-  channel_dropout:
-    p: 0.0
+    freq_masks: 2
+    freq_mask_width: 8
+    p: 0.3
 
 decoding:
   type: beam
@@ -78,5 +74,5 @@ decoding:
 
 logging:
   seed: 42
-  run_name: mps_silent_finetune
+  run_name: viz_voiced_fast_plus
   log_interval: 10
