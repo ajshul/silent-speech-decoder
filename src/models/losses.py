@@ -17,10 +17,17 @@ class LossWeights:
 
 
 class DistillationCTCLoss(nn.Module):
-    def __init__(self, vocab_size: int, blank_id: int, weights: LossWeights):
+    def __init__(
+        self,
+        vocab_size: int,
+        blank_id: int,
+        weights: LossWeights,
+        normalize_distill: bool = False,
+    ):
         super().__init__()
         self.ctc_loss = nn.CTCLoss(blank=blank_id, zero_infinity=True)
         self.weights = weights
+        self.normalize_distill = normalize_distill
 
     def forward(
         self,
@@ -35,24 +42,64 @@ class DistillationCTCLoss(nn.Module):
         """
         Args:
             log_probs: (batch, time, vocab) log softmax output.
-            logit_lengths: (batch,) lengths after subsampling.
+            logit_lengths: (batch,) lengths after subsampling (before padding).
             targets: (batch, target_len) token ids.
             target_lengths: (batch,) token lengths.
             student_repr: (batch, time, dim) encoder output.
             teacher_repr: (batch, time_teacher, dim_teacher) or None.
+            teacher_lengths: (batch,) teacher lengths before padding, if available.
         """
         # CTC expects (time, batch, vocab).
         log_probs_t = log_probs.transpose(0, 1)
-        ctc = self.ctc_loss(log_probs_t, targets, logit_lengths, target_lengths)
+        # CTCLoss expects lengths on CPU even when running on MPS/CUDA.
+        ctc_lengths = logit_lengths.cpu() if logit_lengths.is_cuda or logit_lengths.is_mps else logit_lengths
+        ctc = self.ctc_loss(log_probs_t, targets, ctc_lengths, target_lengths)
 
-        if teacher_repr is None:
-            distill = torch.tensor(0.0, device=log_probs.device)
-        else:
-            # Align by truncating to the shorter of student/teacher.
-            max_time = min(student_repr.size(1), teacher_repr.size(1))
-            distill = F.mse_loss(
-                student_repr[:, :max_time], teacher_repr[:, :max_time]
+        distill = torch.tensor(0.0, device=log_probs.device)
+        if teacher_repr is not None:
+            # Align teacher to student time resolution to avoid over-penalizing padding.
+            student_len = student_repr.size(1)
+            teacher_len = teacher_repr.size(1)
+            device = log_probs.device
+
+            teacher = teacher_repr
+            aligned_teacher_lengths = teacher_lengths.to(device) if teacher_lengths is not None else None
+            if teacher_len != student_len:
+                teacher = F.interpolate(
+                    teacher.transpose(1, 2),
+                    size=student_len,
+                    mode="linear",
+                    align_corners=False,
+                ).transpose(1, 2)
+                if aligned_teacher_lengths is not None and teacher_len > 0:
+                    scale = float(student_len) / float(teacher_len)
+                    aligned_teacher_lengths = torch.clamp(
+                        torch.round(aligned_teacher_lengths.float() * scale).long(),
+                        max=student_len,
+                    )
+
+            student_lengths = logit_lengths.to(device)
+            valid_lengths = student_lengths
+            if aligned_teacher_lengths is not None:
+                valid_lengths = torch.minimum(valid_lengths, aligned_teacher_lengths)
+            valid_lengths = torch.clamp(valid_lengths, max=student_len)
+
+            mask = (
+                torch.arange(student_len, device=device)
+                .unsqueeze(0)
+                .expand(student_repr.size(0), -1)
+                < valid_lengths.unsqueeze(1)
             )
+            student_for_loss = student_repr
+            teacher_for_loss = teacher
+            if self.normalize_distill:
+                student_for_loss = F.layer_norm(student_for_loss, student_for_loss.shape[-1:])
+                teacher_for_loss = F.layer_norm(teacher_for_loss, teacher_for_loss.shape[-1:])
+
+            mse = torch.pow(student_for_loss - teacher_for_loss, 2)
+            masked = mse * mask.unsqueeze(-1)
+            denom = (mask.sum() * student_repr.size(-1)).clamp_min(1)
+            distill = masked.sum() / denom
 
         total = self.weights.lambda_ctc * ctc + self.weights.lambda_distill * distill
         return {"total": total, "ctc": ctc, "distill": distill}

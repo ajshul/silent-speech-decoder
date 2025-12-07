@@ -27,6 +27,14 @@ class SpecAugmentConfig:
     p: float = 0.0  # probability to apply
 
 
+@dataclass
+class ChannelDropoutConfig:
+    """Randomly zeros entire EMG channels to encourage cross-channel robustness."""
+
+    p: float = 0.0  # probability to apply per sample
+    max_channels: int = 1  # maximum number of channels to drop
+
+
 class SpecAugment:
     """Lightweight SpecAugment on log-mel features."""
 
@@ -70,6 +78,7 @@ class EMGFeatureDataset(Dataset):
         subsets: Optional[Sequence[str]] = None,
         include_teacher: bool = True,
         strict: bool = True,
+        channel_dropout_cfg: Optional[ChannelDropoutConfig] = None,
     ) -> None:
         df = load_index(index_path)
         df = df[df["split"].isin(splits)].reset_index(drop=True)
@@ -85,6 +94,7 @@ class EMGFeatureDataset(Dataset):
         self.vocab = vocab
         self.include_teacher = include_teacher
         self.strict = strict
+        self.channel_dropout_cfg = channel_dropout_cfg or ChannelDropoutConfig()
 
     def __len__(self) -> int:
         return len(self.df)
@@ -96,8 +106,24 @@ class EMGFeatureDataset(Dataset):
         arr = np.load(path)
         # Collapse channels+mels into a single feature dimension.
         feat = torch.from_numpy(arr).float()  # (T, C, n_mels)
+        feat = self._maybe_channel_dropout(feat)
         t, c, m = feat.shape
         return feat.view(t, c * m)
+
+    def _maybe_channel_dropout(self, feat: torch.Tensor) -> torch.Tensor:
+        """Drop full channels with probability p to make the model robust to sensor dropouts."""
+        cfg = self.channel_dropout_cfg
+        if cfg.p <= 0 or feat.ndim != 3 or random.random() > cfg.p:
+            return feat
+        _, channels, _ = feat.shape
+        if channels <= 1:
+            return feat
+        max_drop = min(max(1, cfg.max_channels), channels - 1)
+        drop_n = random.randint(1, max_drop)
+        drop_indices = random.sample(range(channels), k=drop_n)
+        feat = feat.clone()
+        feat[:, drop_indices, :] = 0.0
+        return feat
 
     def _load_teacher(self, utterance_id: str) -> Optional[torch.Tensor]:
         path = self.features_root / "teacher" / f"{utterance_id}.npy"
@@ -206,6 +232,7 @@ def make_dataloader(
     max_items: Optional[int] = None,
     pin_memory: bool = False,
     prefetch_factor: int | None = None,
+    channel_dropout_cfg: Optional[ChannelDropoutConfig] = None,
 ) -> DataLoader:
     dataset = EMGFeatureDataset(
         index_path=index_path,
@@ -215,6 +242,7 @@ def make_dataloader(
         subsets=subsets,
         include_teacher=include_teacher,
         strict=strict,
+        channel_dropout_cfg=channel_dropout_cfg,
     )
     if max_items is not None:
         max_items = min(max_items, len(dataset))

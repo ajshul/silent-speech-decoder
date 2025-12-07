@@ -195,6 +195,11 @@ def main() -> None:
         spec_augment_cfg=None,
         include_teacher=False,
     )
+    if len(loader) == 0:
+        raise ValueError(
+            f"No samples found for splits {splits} and subsets {subsets}. "
+            "Check that the index contains those subsets (voiced uses train/val/test; silent uses eval_silent)."
+        )
 
     run_name = args.run_name or cfg.get("logging", {}).get("run_name", "eval_run")
     out_dir = args.output or Path("results/eval") / run_name

@@ -1,0 +1,82 @@
+data:
+  root: data/emg_data
+  index: results/index.parquet
+  features_root: results/features
+  train_splits: [voiced_parallel_data]
+  val_splits: [voiced_parallel_data]
+  train_subsets: [train]
+  val_subsets: [val]
+  vocab: configs/vocab.json
+
+features:
+  emg:
+    sample_rate: 1000
+    n_fft: 320
+    hop_length: 10
+    n_mels: 80
+    normalize: per_file
+  teacher:
+    model_name: microsoft/wavlm-base-plus
+    layer: 9
+    sample_rate: 16000
+    dim: 768
+
+model:
+  encoder:
+    d_model: 288
+    num_layers: 8
+    num_heads: 6
+    ffn_dim: 1200
+    depthwise_conv_kernel_size: 17
+    dropout: 0.1
+    subsample_factor: 2
+    input_dim: 640
+  projection_dim: 768
+  ctc_dropout: 0.08
+
+loss:
+  lambda_distill: 0.25
+  lambda_ctc: 0.75
+  distill_warmup_epochs: 5
+  distill_normalize: true
+
+optim:
+  batch_size: 4
+  grad_accum: 2
+  lr: 3e-4
+  weight_decay: 7.5e-3
+  max_epochs: 70
+  clip_grad_norm: 5.0
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
+  scheduler:
+    name: linear
+    warmup_steps: 1000
+  early_stopping:
+    patience: 8
+    min_delta: 0.0
+
+augmentation:
+  specaugment:
+    time_masks: 2
+    time_mask_width: 0.08
+    freq_masks: 2
+    freq_mask_width: 10
+    p: 0.3
+  channel_dropout:
+    p: 0.25
+    max_channels: 2
+
+decoding:
+  type: beam
+  beam_width: 60
+  alpha: 0.35
+  beta: 0.0
+  beam_prune_logp: -10.0
+  lm_path: null
+
+logging:
+  seed: 42
+  run_name: mps_cer_tuned
+  log_interval: 10

@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from src.data.dataset import SpecAugmentConfig, make_dataloader
+from src.data.dataset import ChannelDropoutConfig, SpecAugmentConfig, make_dataloader
 from src.data.vocab import Vocab
 from src.models.emg_encoder import EMGConformerEncoder, EncoderConfig
 from src.models.heads import CTCHead, ProjectionHead
@@ -93,6 +93,7 @@ def build_scheduler(
       - warmup_steps: int (linear)
       - eta_min: float (cosine)
       - t_max/total_steps: int (cosine/linear decay horizon)
+      - warmup_hold: linear warmup to base LR, then hold constant
     """
     sched_cfg = cfg["optim"].get("scheduler")
     if not sched_cfg:
@@ -116,6 +117,18 @@ def build_scheduler(
                 return float(step + 1) / float(max(1, warmup_steps))
             progress = (step - warmup_steps) / float(max(1, decay_steps - warmup_steps))
             return max(0.0, 1.0 - progress)
+
+        return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    if name in {"warmup_hold", "warmup_constant", "warmup_const"}:
+        warmup_steps = int(sched_cfg.get("warmup_steps", 0)) if isinstance(sched_cfg, dict) else 0
+
+        def lr_lambda(step: int) -> float:
+            if warmup_steps <= 0:
+                return 1.0
+            if step < warmup_steps:
+                return float(step + 1) / float(max(1, warmup_steps))
+            return 1.0
 
         return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
@@ -213,6 +226,9 @@ def train_one_epoch(
         teacher = (
             batch["teacher"].to(device) if batch["teacher"] is not None else None
         )
+        teacher_lengths = (
+            batch["teacher_lengths"].to(device) if batch.get("teacher_lengths") is not None else None
+        )
 
         enc_out, enc_lengths = encoder(emg, emg_lengths)
         student_repr = projection(enc_out)
@@ -220,11 +236,12 @@ def train_one_epoch(
 
         last_losses = loss_fn(
             log_probs=log_probs,
-            logit_lengths=enc_lengths.cpu(),
+            logit_lengths=enc_lengths,
             targets=tokens,
             target_lengths=token_lengths,
             student_repr=student_repr,
             teacher_repr=teacher,
+            teacher_lengths=teacher_lengths,
         )
         loss = last_losses["total"] / grad_accum
         loss.backward()
@@ -274,17 +291,21 @@ def evaluate(
         tokens = batch["tokens"].to(device)
         token_lengths = batch["token_lengths"].to(device)
         teacher = batch["teacher"].to(device) if batch["teacher"] is not None else None
+        teacher_lengths = (
+            batch["teacher_lengths"].to(device) if batch.get("teacher_lengths") is not None else None
+        )
 
         enc_out, enc_lengths = encoder(emg, emg_lengths)
         student_repr = projection(enc_out)
         log_probs = ctc_head(enc_out)
         losses = loss_fn(
             log_probs=log_probs,
-            logit_lengths=enc_lengths.cpu(),
+            logit_lengths=enc_lengths,
             targets=tokens,
             target_lengths=token_lengths,
             student_repr=student_repr,
             teacher_repr=teacher,
+            teacher_lengths=teacher_lengths,
         )
         totals.append(losses["total"].item())
         ctc_losses.append(losses["ctc"].item())
@@ -340,6 +361,13 @@ def main() -> None:
             freq_mask_width=spec_section.get("freq_mask_width", 8),
             p=spec_section.get("p", 0.0),
         )
+    channel_dropout_cfg = None
+    channel_section = cfg.get("augmentation", {}).get("channel_dropout")
+    if channel_section and channel_section.get("p", 0) > 0:
+        channel_dropout_cfg = ChannelDropoutConfig(
+            p=channel_section.get("p", 0.0),
+            max_channels=channel_section.get("max_channels", 1),
+        )
 
     train_limit = None
     val_limit = None
@@ -364,6 +392,7 @@ def main() -> None:
         max_items=train_limit,
         pin_memory=cfg["optim"].get("pin_memory", False),
         prefetch_factor=cfg["optim"].get("prefetch_factor"),
+        channel_dropout_cfg=channel_dropout_cfg,
     )
     val_loader = make_dataloader(
         index_path=Path(cfg["data"]["index"]),
@@ -379,6 +408,7 @@ def main() -> None:
         max_items=val_limit,
         pin_memory=cfg["optim"].get("pin_memory", False),
         prefetch_factor=cfg["optim"].get("prefetch_factor"),
+        channel_dropout_cfg=None,
     )
 
     logger.info(
@@ -407,6 +437,7 @@ def main() -> None:
         vocab_size=vocab.size,
         blank_id=vocab.blank_id,
         weights=base_loss_weights,
+        normalize_distill=bool(cfg["loss"].get("distill_normalize", False)),
     ).to(device)
     distill_warmup_epochs = int(cfg["loss"].get("distill_warmup_epochs", 0))
 
