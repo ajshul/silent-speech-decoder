@@ -38,6 +38,66 @@ def compute_metrics(refs: Sequence[str], hyps: Sequence[str]) -> Dict[str, float
     }
 
 
+def compute_error_breakdown(refs: Sequence[str], hyps: Sequence[str]) -> Dict[str, float]:
+    """
+    Compute insertion/deletion/substitution counts.
+    Tries jiwer.compute_measures if available; falls back to a local Levenshtein-based counter
+    to avoid version mismatches.
+    """
+    if hasattr(jiwer, "compute_measures"):
+        measures = jiwer.compute_measures(refs, hyps)
+        total_words = float(measures["substitutions"] + measures["deletions"] + measures["hits"])
+        total_words = max(total_words, 1.0)
+        return {
+            "substitutions": float(measures["substitutions"]),
+            "deletions": float(measures["deletions"]),
+            "insertions": float(measures["insertions"]),
+            "hits": float(measures["hits"]),
+            "substitution_rate": float(measures["substitutions"]) / total_words,
+            "deletion_rate": float(measures["deletions"]) / total_words,
+            "insertion_rate": float(measures["insertions"]) / total_words,
+        }
+
+    def _levenshtein_counts(ref_tokens: List[str], hyp_tokens: List[str]) -> Dict[str, int]:
+        # dp[i][j] = (cost, ins, del, sub, hits)
+        n, m = len(ref_tokens), len(hyp_tokens)
+        dp = [[(0, 0, 0, 0, 0) for _ in range(m + 1)] for _ in range(n + 1)]
+        for i in range(1, n + 1):
+            dp[i][0] = (i, 0, i, 0, 0)
+        for j in range(1, m + 1):
+            dp[0][j] = (j, j, 0, 0, 0)
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                ins = dp[i][j - 1]
+                ins_state = (ins[0] + 1, ins[1] + 1, ins[2], ins[3], ins[4])
+                dele = dp[i - 1][j]
+                del_state = (dele[0] + 1, dele[1], dele[2] + 1, dele[3], dele[4])
+                diag = dp[i - 1][j - 1]
+                if ref_tokens[i - 1] == hyp_tokens[j - 1]:
+                    diag_state = (diag[0], diag[1], diag[2], diag[3], diag[4] + 1)
+                else:
+                    diag_state = (diag[0] + 1, diag[1], diag[2], diag[3] + 1, diag[4])
+                dp[i][j] = min([ins_state, del_state, diag_state], key=lambda t: (t[0], -t[4]))
+        _, ins_c, del_c, sub_c, hits_c = dp[n][m]
+        return {"insertions": ins_c, "deletions": del_c, "substitutions": sub_c, "hits": hits_c}
+
+    totals = {"insertions": 0, "deletions": 0, "substitutions": 0, "hits": 0}
+    for ref, hyp in zip(refs, hyps):
+        counts = _levenshtein_counts(ref.split(), hyp.split())
+        for k in totals:
+            totals[k] += counts[k]
+    total_words = max(1.0, float(totals["substitutions"] + totals["deletions"] + totals["hits"]))
+    return {
+        "substitutions": float(totals["substitutions"]),
+        "deletions": float(totals["deletions"]),
+        "insertions": float(totals["insertions"]),
+        "hits": float(totals["hits"]),
+        "substitution_rate": float(totals["substitutions"]) / total_words,
+        "deletion_rate": float(totals["deletions"]) / total_words,
+        "insertion_rate": float(totals["insertions"]) / total_words,
+    }
+
+
 def load_model_from_checkpoint(ckpt_path: Path, device: torch.device, cfg: Dict, vocab_size: int):
     payload = torch.load(ckpt_path, map_location=device)
 
@@ -136,12 +196,18 @@ def main() -> None:
     decoding_cfg = cfg.get("decoding", {})
     decoder_type = args.decoder or decoding_cfg.get("type", "greedy")
     lm_path = args.lm_path or decoding_cfg.get("lm_path")
-    beam_width = args.beam_width if args.beam_width is not None else decoding_cfg.get("beam_width", 50)
-    alpha = args.alpha if args.alpha is not None else decoding_cfg.get("alpha", 0.6)
-    beta = args.beta if args.beta is not None else decoding_cfg.get("beta", 0.0)
-    beam_prune_logp = args.beam_prune_logp if args.beam_prune_logp is not None else decoding_cfg.get(
-        "beam_prune_logp", -10.0
-    )
+    beam_width = args.beam_width if args.beam_width is not None else decoding_cfg.get("beam_width")
+    if beam_width is None:
+        beam_width = 0 if decoder_type == "greedy" else 50
+    alpha = args.alpha if args.alpha is not None else decoding_cfg.get("alpha")
+    beta = args.beta if args.beta is not None else decoding_cfg.get("beta")
+    if alpha is None:
+        alpha = 0.0 if decoder_type == "greedy" else 0.6
+    if beta is None:
+        beta = 0.0
+    beam_prune_logp = args.beam_prune_logp if args.beam_prune_logp is not None else decoding_cfg.get("beam_prune_logp")
+    if beam_prune_logp is None:
+        beam_prune_logp = -10.0
     blank_bias = float(args.blank_bias)
     decoder = build_decoder(
         method=decoder_type,
@@ -239,6 +305,22 @@ def main() -> None:
             records.append({"utterance_id": uid, "ref": ref, "hyp": hyp})
 
     metrics = compute_metrics(all_refs, all_hyps)
+    metrics["error_breakdown"] = compute_error_breakdown(all_refs, all_hyps)
+    metrics["decoder"] = {
+        "type": decoder_type,
+        "beam_width": beam_width if decoder_type == "beam" else None,
+        "alpha": alpha if decoder_type == "beam" else None,
+        "beta": beta if decoder_type == "beam" else None,
+        "beam_prune_logp": beam_prune_logp if decoder_type == "beam" else None,
+        "blank_bias": blank_bias,
+        "lm_path": str(lm_path) if lm_path else None,
+    }
+    metrics["data"] = {
+        "splits": list(splits),
+        "subsets": list(subsets) if subsets else None,
+        "num_samples": len(all_refs),
+    }
+    metrics["run_name"] = run_name
     (out_dir / "config_used.json").write_text(json.dumps(cfg, indent=2))
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
     with (out_dir / "predictions.jsonl").open("w") as f:
