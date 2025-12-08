@@ -19,3 +19,6 @@ Lightweight PyTorch pipeline for turning throat EMG signals into text using a Wa
 - `tests/` small unit tests for data, models, and training/eval
 - `results/` gitignored outputs (checkpoints, evals, features)
 - `data/` gitignored dataset root (`data/emg_data/` expected)
+
+## More detail
+See `blog_post.pdf` for a narrative walkthrough of the system and methodology.
