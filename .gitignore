@@ -31,3 +31,5 @@ lightning_logs/
 .idea/
 *.swp
 .DS_Store
+
+/visualizations
