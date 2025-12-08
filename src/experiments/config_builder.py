@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 import yaml
 
 VOICED_BASE_CONFIG = Path("configs/mps_fast_plus.yaml")
-SILENT_BASE_CONFIG = Path("configs/mps_silent_finetune.yaml")
+SILENT_BASE_CONFIG = Path("configs/mps_silent_finetune_plus.yaml")
 
 
 def _load_yaml(path: Path) -> Dict:
@@ -389,13 +389,19 @@ def build_voiced_stage2_configs(best_probe: Dict, include_baseline: bool = True)
     return runs
 
 
-def build_silent_stage2_configs(best_probe: Dict, init_checkpoint: Path, include_baseline: bool = True) -> List[RunSpec]:
+def build_silent_stage2_configs(
+    best_probe: Dict,
+    init_checkpoint: Path,
+    include_baseline: bool = True,
+) -> List[RunSpec]:
     base_cfg = _load_yaml(SILENT_BASE_CONFIG)
     runs: List[RunSpec] = []
     if include_baseline:
+        run_name = "stage2_silent_baseline"
+        init_for_baseline = init_checkpoint
         baseline_cfg = _attach_metadata(
             base_cfg,
-            name="stage2_silent_baseline",
+            name=run_name,
             stage="stage2",
             dataset="silent",
             tags=["baseline"],
@@ -404,12 +410,12 @@ def build_silent_stage2_configs(best_probe: Dict, init_checkpoint: Path, include
         )
         runs.append(
             RunSpec(
-                name="stage2_silent_baseline",
+                name=run_name,
                 stage="stage2",
                 dataset="silent",
                 config=baseline_cfg,
                 decoder_grid=FULL_DECODERS_SILENT,
-                init_checkpoint=init_checkpoint,
+                init_checkpoint=init_for_baseline,
                 tags=["baseline"],
                 description="Baseline silent fine-tune (anchor) from best voiced.",
             )

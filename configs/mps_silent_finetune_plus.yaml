@@ -4,7 +4,7 @@ data:
   features_root: results/features
   train_splits: [silent_parallel_data]
   val_splits: [silent_parallel_data]
-  train_subsets: [train]   # hashed silent splits; switch to eval_silent if using the older index
+  train_subsets: [train]
   val_subsets: [val]
   vocab: configs/vocab.json
   include_teacher: false
@@ -31,7 +31,7 @@ model:
     ffn_dim: 1152
     depthwise_conv_kernel_size: 15
     dropout: 0.1
-    subsample_factor: 2   # keep CTC resolution for silent EMG
+    subsample_factor: 2
     input_dim: 640
   projection_dim: 768
   ctc_dropout: 0.1
@@ -42,10 +42,10 @@ loss:
   distill_warmup_epochs: 0
 
 optim:
-  batch_size: 2          # stabilize updates; use grad_accum for effective batch 4
+  batch_size: 2
   grad_accum: 2
-  lr: 1.5e-4
-  weight_decay: 5e-3
+  lr: 0.00015
+  weight_decay: 0.005
   max_epochs: 50
   clip_grad_norm: 5.0
   num_workers: 4
@@ -54,7 +54,7 @@ optim:
   scheduler:
     name: cosine
     t_max: 50000
-    eta_min: 5e-5
+    eta_min: 0.00005
   early_stopping:
     patience: 8
     min_delta: 0.0

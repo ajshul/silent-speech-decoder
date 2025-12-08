@@ -263,9 +263,14 @@ def run_specs(
 
 
 def pick_best(records: Sequence[Dict], dataset: str, stage: Optional[str] = None) -> Optional[Dict]:
+    """
+    Select best record prioritizing CER (primary), then WER, then deletion_rate.
+    This emphasizes insertion control/blank tuning for silent EMG while still
+    considering overall correctness.
+    """
     filtered = [r for r in records if r.get("dataset") == dataset and (stage is None or r.get("stage") == stage)]
-    filtered = [r for r in filtered if r.get("wer") is not None]
-    filtered.sort(key=lambda r: (r.get("wer", 1e6), r.get("cer", 1e6), r.get("deletion_rate", 0.0)))
+    filtered = [r for r in filtered if r.get("cer") is not None]
+    filtered.sort(key=lambda r: (r.get("cer", 1e6), r.get("wer", 1e6), r.get("deletion_rate", 0.0)))
     return filtered[0] if filtered else None
 
 
@@ -372,7 +377,18 @@ def best_probe_to_knobs(record: Dict) -> Dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Two-stage experiment orchestrator (probes -> full runs).")
-    parser.add_argument("--probe-batches", type=int, default=24, help="Batches to use for Stage 1 probes.")
+    parser.add_argument(
+        "--probe-batches",
+        type=int,
+        default=48,
+        help="Batches to use for Stage 1 probes (larger slices improve CER separation).",
+    )
+    parser.add_argument(
+        "--probe-batches-silent",
+        type=int,
+        default=24,
+        help="Batches to use for Stage 1 silent probes (smaller slice is sufficient and saves time).",
+    )
     parser.add_argument("--eval-batch-size", type=int, default=4, help="Batch size to use for evaluation.")
     parser.add_argument("--dry-run", action="store_true", help="Only write configs and print commands, do not execute.")
     parser.add_argument("--force-train", action="store_true", help="Re-run training even if checkpoints exist.")
@@ -428,8 +444,11 @@ def main() -> None:
         ]
         run_command(overfit_cmd, dry_run=args.dry_run)
 
+    voiced_probe_batches = args.probe_batches
+    silent_probe_batches = args.probe_batches_silent or args.probe_batches
+
     if args.stage in {"all", "stage1"}:
-        voiced_probes = build_voiced_probe_configs(args.probe_batches)
+        voiced_probes = build_voiced_probe_configs(voiced_probe_batches)
         all_records.extend(
             run_specs(
                 voiced_probes,
@@ -488,7 +507,7 @@ def main() -> None:
         best_voiced_ckpt = Path(best_voiced_full["checkpoint_path"])
 
         # Stage 1 silent probes driven by voiced checkpoint.
-        silent_probes = build_silent_probe_configs(args.probe_batches, init_checkpoint=best_voiced_ckpt)
+        silent_probes = build_silent_probe_configs(silent_probe_batches, init_checkpoint=best_voiced_ckpt)
         all_records.extend(
             run_specs(
                 silent_probes,
